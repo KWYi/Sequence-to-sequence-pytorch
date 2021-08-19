@@ -40,7 +40,8 @@ for epoch in EPOCHS:
       # # Output of prior timestep of lstm is used for net input and Encoder result is concated with it in the model
       Result_part, Decoder_hidden, _ = D(Result_part, Decoder_hidden, Encoder_result)
       Result[:, di] = Result_part.view(len(Encoder_result))
-'''
+```
+
 
 ```
 import os, sys
