@@ -1,6 +1,6 @@
 # Sequence-to-sequence
 
-The codes of Sequence to seqence.
+This is a PyTorch implementation of sequence-to-seqence (seq2seq) and seq2seq with additive attention.
 
 This code has been used for the paper "Forecast of Major Solar X-Ray Flare Flux Profiles Using Novel Deep Learning Models" (https://doi.org/10.3847/2041-8213/ab701b).
 
