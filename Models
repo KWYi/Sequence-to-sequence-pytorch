@@ -1,0 +1,1140 @@
+import torch
+import torch.nn as nn
+from torchsummary import summary
+import torch.nn.functional as F
+from torch.autograd import Variable
+import sys
+import numpy as np
+
+DEVICE = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu:0')
+
+
+class Simple_LSTM(nn.Module):
+    def __init__(self, input_size, hidden_size, layer_num, output_len, initiallize=True, drop_frac=0.0):
+        super(Simple_LSTM, self).__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.layer_num = layer_num
+        self.output_len = output_len
+
+        self.lstm = nn.LSTM(input_size=self.input_size, hidden_size=self.hidden_size, num_layers=self.layer_num,
+                            batch_first=True, dropout=drop_frac)
+        self.linear = [nn.Linear(self.hidden_size, self.hidden_size),
+                       nn.ReLU(),
+                       nn.Linear(self.hidden_size, 1)]
+        self.linear = nn.Sequential(*self.linear)
+
+        if initiallize:
+            self.lstm.apply(self.init_weights)
+            self.linear_act_name = 'relu'
+            self.linear.apply(self.init_weights)
+
+    def forward(self, input):
+        x, (hidden, cell) = self.lstm(input)
+        x = self.linear(x[:, -1:, :])
+        x = torch.tanh(x)
+        _x = x.view(x.shape[0], 1, 1)
+        forecast = torch.zeros_like(_x)
+        forecast = torch.cat((forecast, _x), dim=1)
+        for i in range(self.output_len):
+            x, (hidden, cell) = self.lstm(x)
+            x = self.linear(x)
+            x = torch.tanh(x)
+            _x = x.view(x.shape[0], 1, 1)
+            forecast = torch.cat((forecast, _x), dim=1)
+        forecast = forecast[:, 1:, :]
+        forecast = forecast.view(forecast.shape[0], -1)
+
+        return forecast
+
+    def init_weights(self, module):
+        # linear act 종류에 따라서 초기화 모델 달라지게 코딩하기. ReLU -> kaiming_normal. the others -> xavier
+        if isinstance(module, nn.Linear):
+            if self.linear_act_name == 'relu' or self.linear_act_name == 'leaky_reLU':
+                nn.init.kaiming_normal_(module.weight.detach(), mode='fan_out', nonlinearity=self.linear_act_name)
+                # nn.init.kaiming_uniform_(module.weight.detach(), mode='fan_out', nonlinearity='relu')
+                module.bias.detach().fill_(0.)
+            elif any(self.linear_act_name == np.array(['tanh', 'sigmoid', 'linear'])):
+                nn.init.xavier_normal_(module.weight.detach(), gain=nn.init.calculate_gain(self.linear_act_name))
+                # nn.init.xavier_uniform_(module.weight.detach(), gain=nn.init.calculate_gain(self.linear_act_name))
+                module.bias.detach().fill_(0.)
+            else:
+                raise NotImplementedError("Initializer got error!")
+        elif isinstance(module, nn.LSTM):
+            nn.init.orthogonal_(module.weight_ih_l0.detach(), gain=1)
+            nn.init.orthogonal_(module.weight_hh_l0.detach(), gain=1)
+            nn.init.orthogonal_(module.weight_ih_l1.detach(), gain=1)
+            nn.init.orthogonal_(module.weight_hh_l1.detach(), gain=1)
+            # nn.init.xavier_normal_(module.weight_ih_l0.detach(), gain=1)
+            # nn.init.xavier_normal_(module.weight_hh_l0.detach(), gain=1)
+            # nn.init.xavier_normal_(module.weight_ih_l1.detach(), gain=1)
+            # nn.init.xavier_normal_(module.weight_hh_l1.detach(), gain=1)
+            # nn.init.xavier_uniform_(module.weight_ih_l0.detach(), gain=4. / 3.)
+            # nn.init.xavier_uniform_(module.weight_hh_l0.detach(), gain=4. / 3.)
+            # nn.init.xavier_uniform_(module.weight_ih_l1.detach(), gain=4. / 3.)
+            # nn.init.xavier_uniform_(module.weight_hh_l1.detach(), gain=4. / 3.)
+            module.bias_ih_l0.detach().fill_(0.)
+            module.bias_hh_l0.detach().fill_(0.)
+            module.bias_ih_l1.detach().fill_(0.)
+            module.bias_ih_l1.detach().fill_(0.)
+
+
+class Encoder(nn.Module):
+    def __init__(self, input_size, hidden_size, layer_num, encoded_size, initiallize=True, drop_frac=0.0):
+        super(Encoder, self).__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.encoded_size = encoded_size
+        self.layer_num = layer_num
+
+        self.lstm = nn.LSTM(input_size=self.input_size, hidden_size=self.hidden_size, num_layers=self.layer_num,
+                            batch_first=True, dropout=drop_frac)
+        self.linear = [nn.Linear(self.hidden_size, self.encoded_size),
+                       nn.ReLU()]
+        self.linear = nn.Sequential(*self.linear)
+
+        if initiallize:
+            self.lstm.apply(self.init_weights)
+            if self.encoded_size:
+                self.linear_act_name = 'relu'
+                self.linear.apply(self.init_weights)
+
+    def forward(self, input):
+        x, hidden = self.lstm(input)
+        x = self.linear(x[:, -1:, :])
+        return x, hidden
+
+    def init_weights(self, module):
+        # linear act 종류에 따라서 초기화 모델 달라지게 코딩하기. ReLU -> kaiming_normal. the others -> xavier
+        if isinstance(module, nn.Linear):
+            if self.linear_act_name == 'relu' or self.linear_act_name == 'leaky_reLU':
+                nn.init.kaiming_normal_(module.weight.detach(), mode='fan_out', nonlinearity=self.linear_act_name)
+                # nn.init.kaiming_uniform_(module.weight.detach(), mode='fan_out', nonlinearity='relu')
+                module.bias.detach().fill_(0.)
+            elif any(self.linear_act_name == np.array(['tanh', 'sigmoid', 'linear'])):
+                nn.init.xavier_normal_(module.weight.detach(), gain=nn.init.calculate_gain(self.linear_act_name))
+                # nn.init.xavier_uniform_(module.weight.detach(), gain=nn.init.calculate_gain(self.linear_act_name))
+                module.bias.detach().fill_(0.)
+            else:
+                raise NotImplementedError("Initializer got error!")
+        elif isinstance(module, nn.LSTM):
+            nn.init.orthogonal_(module.weight_ih_l0.detach(), gain=1)
+            nn.init.orthogonal_(module.weight_hh_l0.detach(), gain=1)
+            nn.init.orthogonal_(module.weight_ih_l1.detach(), gain=1)
+            nn.init.orthogonal_(module.weight_hh_l1.detach(), gain=1)
+            # nn.init.xavier_normal_(module.weight_ih_l0.detach(), gain=1)
+            # nn.init.xavier_normal_(module.weight_hh_l0.detach(), gain=1)
+            # nn.init.xavier_normal_(module.weight_ih_l1.detach(), gain=1)
+            # nn.init.xavier_normal_(module.weight_hh_l1.detach(), gain=1)
+            # nn.init.xavier_uniform_(module.weight_ih_l0.detach(), gain=4. / 3.)
+            # nn.init.xavier_uniform_(module.weight_hh_l0.detach(), gain=4. / 3.)
+            # nn.init.xavier_uniform_(module.weight_ih_l1.detach(), gain=4. / 3.)
+            # nn.init.xavier_uniform_(module.weight_hh_l1.detach(), gain=4. / 3.)
+            module.bias_ih_l0.detach().fill_(0.)
+            module.bias_hh_l0.detach().fill_(0.)
+            module.bias_ih_l1.detach().fill_(0.)
+            module.bias_ih_l1.detach().fill_(0.)
+
+
+class Decoder(nn.Module):
+    def __init__(self, input_size, hidden_size, layer_num, encoded_size, extracted_size=False, output_size=1, initiallize=True,
+                 drop_frac=0.0):
+        super(Decoder, self).__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.layer_num = layer_num
+        self.extracted_size = extracted_size
+        self.encoded_size = encoded_size
+        self.output_size = output_size
+
+        self.lstm = nn.LSTM(input_size=self.input_size+self.encoded_size, hidden_size=self.hidden_size, num_layers=self.layer_num,
+                            batch_first=True, dropout=drop_frac)
+        layer = []
+        if extracted_size:
+            layer += [nn.Linear(self.hidden_size, self.extracted_size),
+                      nn.ReLU(),
+                      nn.Linear(self.embedded_size, self.output_size)]
+        else:
+            layer += [nn.Linear(self.hidden_size, self.output_size)]
+        self.linear = nn.Sequential(*layer)
+
+        if initiallize:
+            self.lstm.apply(self.init_weights)
+            self.linear_act_name = 'linear'
+            self.linear.apply(self.init_weights)
+
+    def forward(self, input, hidden, encoder_result):
+        encoder_result = encoder_result[:, -1:, :]
+        input = torch.cat((input, encoder_result), dim=-1)
+        x, hidden = self.lstm(input, hidden)
+        x = self.linear(x)
+        return x, hidden, []
+
+    def init_weights(self, module):
+        # linear act 종류에 따라서 초기화 모델 달라지게 코딩하기. ReLU -> kaiming_normal. the others -> xavier
+        if isinstance(module, nn.Linear):
+            if self.linear_act_name == 'relu' or self.linear_act_name == 'leaky_reLU':
+                nn.init.kaiming_normal_(module.weight.detach(), mode='fan_out', nonlinearity=self.linear_act_name)
+                # nn.init.kaiming_uniform_(module.weight.detach(), mode='fan_out', nonlinearity='relu')
+                module.bias.detach().fill_(0.)
+            elif any(self.linear_act_name == np.array(['tanh', 'sigmoid', 'linear'])):
+                nn.init.xavier_normal_(module.weight.detach(), gain=nn.init.calculate_gain(self.linear_act_name))
+                # nn.init.xavier_uniform_(module.weight.detach(), gain=nn.init.calculate_gain(self.linear_act_name))
+                module.bias.detach().fill_(0.)
+            else:
+                raise NotImplementedError("Initializer got error!")
+        elif isinstance(module, nn.LSTM):
+            nn.init.orthogonal_(module.weight_ih_l0.detach(), gain=1)
+            nn.init.orthogonal_(module.weight_hh_l0.detach(), gain=1)
+            nn.init.orthogonal_(module.weight_ih_l1.detach(), gain=1)
+            nn.init.orthogonal_(module.weight_hh_l1.detach(), gain=1)
+            # nn.init.xavier_normal_(module.weight_ih_l0.detach(), gain=1)
+            # nn.init.xavier_normal_(module.weight_hh_l0.detach(), gain=1)
+            # nn.init.xavier_normal_(module.weight_ih_l1.detach(), gain=1)
+            # nn.init.xavier_normal_(module.weight_hh_l1.detach(), gain=1)
+            # nn.init.xavier_uniform_(module.weight_ih_l0.detach(), gain=4. / 3.)
+            # nn.init.xavier_uniform_(module.weight_hh_l0.detach(), gain=4. / 3.)
+            # nn.init.xavier_uniform_(module.weight_ih_l1.detach(), gain=4. / 3.)
+            # nn.init.xavier_uniform_(module.weight_hh_l1.detach(), gain=4. / 3.)
+            module.bias_ih_l0.detach().fill_(0.)
+            module.bias_hh_l0.detach().fill_(0.)
+            module.bias_ih_l1.detach().fill_(0.)
+            module.bias_ih_l1.detach().fill_(0.)
+
+
+# # Following Attention Decoder refers to pytorch Training.
+class Encoder4Attn(nn.Module):
+    def __init__(self, input_size, hidden_size, layer_num, encoded_size=False, drop_frac=0.0,
+                 initiallize=False, bidirection=False):
+        super(Encoder4Attn, self).__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.encoded_size = encoded_size
+        self.layer_num = layer_num
+        self.bidirection = bidirection
+
+        self.lstm = nn.LSTM(input_size=self.input_size, hidden_size=self.hidden_size, num_layers=self.layer_num,
+                            batch_first=True, dropout=drop_frac, bidirectional=self.bidirection)
+        if self.encoded_size:
+            self.linear = [nn.Linear(in_features=self.hidden_size, out_features=self.encoded_size),
+                           nn.ReLU()]
+            self.linear = nn.Sequential(*self.linear)
+
+        if initiallize:
+            self.lstm.apply(self.init_weights)
+            if self.encoded_size:
+                self.linear_act_name = 'relu'
+                self.linear.apply(self.init_weights)
+
+    def forward(self, input):
+        x, hidden = self.lstm(input)
+        if self.encoded_size:
+            x = self.linear(x)
+        return x, hidden
+
+    def init_weights(self, module):
+        # linear act 종류에 따라서 초기화 모델 달라지게 코딩하기.
+        if isinstance(module, nn.Linear):
+            if self.linear_act_name == 'relu' or self.linear_act_name == 'leaky_reLU':
+                nn.init.kaiming_normal_(module.weight.detach(), mode='fan_out', nonlinearity=self.linear_act_name)
+                # nn.init.kaiming_uniform_(module.weight.detach(), mode='fan_out', nonlinearity='relu')
+                module.bias.detach().fill_(0.)
+            elif any(self.linear_act_name == np.array(['tanh', 'sigmoid', 'linear'])):
+                nn.init.xavier_normal_(module.weight.detach(), gain=nn.init.calculate_gain(self.linear_act_name))
+                # nn.init.xavier_uniform_(module.weight.detach(), gain=nn.init.calculate_gain(self.linear_act_name))
+                module.bias.detach().fill_(0.)
+            else:
+                raise NotImplementedError("Initializer got error!")
+        elif isinstance(module, nn.LSTM):
+            nn.init.orthogonal_(module.weight_ih_l0.detach(), gain=1)
+            nn.init.orthogonal_(module.weight_hh_l0.detach(), gain=1)
+            nn.init.orthogonal_(module.weight_ih_l1.detach(), gain=1)
+            nn.init.orthogonal_(module.weight_hh_l1.detach(), gain=1)
+            # nn.init.xavier_normal_(module.weight_ih_l0.detach(), gain=1)
+            # nn.init.xavier_normal_(module.weight_hh_l0.detach(), gain=1)
+            # nn.init.xavier_normal_(module.weight_ih_l1.detach(), gain=1)
+            # nn.init.xavier_normal_(module.weight_hh_l1.detach(), gain=1)
+            # nn.init.xavier_uniform_(module.weight_ih_l0.detach(), gain=4. / 3.)
+            # nn.init.xavier_uniform_(module.weight_hh_l0.detach(), gain=4. / 3.)
+            # nn.init.xavier_uniform_(module.weight_ih_l1.detach(), gain=4. / 3.)
+            # nn.init.xavier_uniform_(module.weight_hh_l1.detach(), gain=4. / 3.)
+            module.bias_ih_l0.detach().fill_(0.)
+            module.bias_hh_l0.detach().fill_(0.)
+            module.bias_ih_l1.detach().fill_(0.)
+            module.bias_ih_l1.detach().fill_(0.)
+
+class Encoder4Attn_LN(nn.Module):
+    def __init__(self, input_size, hidden_size, layer_num, encoded_size=False, drop_frac=0.0,
+                 initiallize=False, bidirection=False):
+        super(Encoder4Attn_LN, self).__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.encoded_size = encoded_size
+        self.layer_num = layer_num
+        self.bidirection = bidirection
+
+        self.lstm = nn.LSTM(input_size=self.input_size, hidden_size=self.hidden_size, num_layers=self.layer_num,
+                             batch_first=True, dropout=drop_frac, bidirectional=self.bidirection)
+        self.LN = nn.LayerNorm(self.hidden_size)
+
+        if self.encoded_size:
+            self.linear = [nn.LayerNorm(self.hidden_size),
+                           nn.Linear(in_features=self.hidden_size, out_features=self.encoded_size),
+                           nn.LayerNorm(self.encoded_size),
+                           nn.ReLU()]
+            self.linear = nn.Sequential(*self.linear)
+
+        if initiallize:
+            self.lstm.apply(self.init_weights)
+            if self.encoded_size:
+                self.linear_act_name = 'relu'
+                self.linear.apply(self.init_weights)
+
+    def forward(self, input):
+        x, hidden = self.lstm(input)
+        if self.encoded_size:
+            x = self.linear(x)
+        return x, hidden
+
+    def init_weights(self, module):
+        # linear act 종류에 따라서 초기화 모델 달라지게 코딩하기.
+        if isinstance(module, nn.Linear):
+            if self.linear_act_name == 'relu' or self.linear_act_name == 'leaky_reLU':
+                nn.init.kaiming_normal_(module.weight.detach(), mode='fan_out', nonlinearity=self.linear_act_name)
+                # nn.init.kaiming_uniform_(module.weight.detach(), mode='fan_out', nonlinearity='relu')
+                module.bias.detach().fill_(0.)
+            elif any(self.linear_act_name == np.array(['tanh', 'sigmoid', 'linear'])):
+                nn.init.xavier_normal_(module.weight.detach(), gain=nn.init.calculate_gain(self.linear_act_name))
+                # nn.init.xavier_uniform_(module.weight.detach(), gain=nn.init.calculate_gain(self.linear_act_name))
+                module.bias.detach().fill_(0.)
+            else:
+                raise NotImplementedError("Initializer got error!")
+        elif isinstance(module, nn.LSTM):
+            nn.init.orthogonal_(module.weight_ih_l0.detach(), gain=1)
+            nn.init.orthogonal_(module.weight_hh_l0.detach(), gain=1)
+            module.bias_ih_l0.detach().fill_(0.)
+            module.bias_hh_l0.detach().fill_(0.)
+
+
+class AttnDecoder(nn.Module):
+    def __init__(self, input_size, hidden_size, layer_num, input_len, output_size=1, drop_frac=0., extracted_size=False,
+                 initiallize=False):
+        super(AttnDecoder, self).__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.layer_num = layer_num
+        self.input_len = input_len
+        self.extracted_size = extracted_size
+        self.output_size = output_size
+
+        self.attn = nn.Linear(self.hidden_size + 1, self.input_len)
+        self.attn_combine = nn.Linear(self.input_size + 1, self.input_size)
+
+        self.lstm = nn.LSTM(input_size=self.input_size, hidden_size=self.hidden_size, num_layers=self.layer_num,
+                            batch_first=True, dropout=drop_frac)
+        linear = []
+        if extracted_size:
+            linear += [nn.Linear(in_features=self.hidden_size, out_features=self.extracted),
+                       nn.ReLU(),
+                       nn.Linear(in_features=self.extracted, out_features=self.output_size)]
+        else:
+            linear += [nn.Linear(in_features=self.hidden_size, out_features=self.output_size)]
+        self.linear = nn.Sequential(*linear)
+
+        if initiallize:
+            self.lstm.apply(self.init_weights)
+            self.linear_act_name = 'relu'
+            self.attn.apply(self.init_weights)
+            self.linear_act_name = 'relu'
+            self.attn_combine.apply(self.init_weights)
+            self.linear_act_name = 'linear'
+            self.linear.apply(self.init_weights)
+
+    def forward(self, input, hidden, encoder_outputs):
+        temp_hidden = hidden[0][-1:]
+        temp_hidden = torch.transpose(temp_hidden, 0, 1)
+        attn_weights = F.softmax(
+            self.attn(
+                torch.cat((input, temp_hidden), dim=-1)
+            ),
+            dim=-1)
+        attn_applied = torch.bmm(attn_weights, encoder_outputs)
+
+        output = torch.cat((input, attn_applied), dim=-1)
+        output = F.relu(output)
+        output = self.attn_combine(output)
+        output = F.relu(output)
+        output, hidden = self.lstm(output, hidden)
+        output = self.linear(output)
+        return output, hidden, attn_weights.detach()
+
+    def init_weights(self, module):
+        # linear act 종류에 따라서 초기화 모델 달라지게 코딩하기. ReLU -> kaiming_normal. the others -> xavier
+        if isinstance(module, nn.Linear):
+            if self.linear_act_name == 'relu' or self.linear_act_name == 'leaky_reLU':
+                nn.init.kaiming_normal_(module.weight.detach(), mode='fan_out', nonlinearity=self.linear_act_name)
+                # nn.init.kaiming_uniform_(module.weight.detach(), mode='fan_out', nonlinearity='relu')
+                module.bias.detach().fill_(0.)
+            elif any(self.linear_act_name == np.array(['tanh', 'sigmoid', 'linear'])):
+                nn.init.xavier_normal_(module.weight.detach(), gain=nn.init.calculate_gain(self.linear_act_name))
+                # nn.init.xavier_uniform_(module.weight.detach(), gain=nn.init.calculate_gain(self.linear_act_name))
+                module.bias.detach().fill_(0.)
+            else:
+                raise NotImplementedError("Initializer got error!")
+        elif isinstance(module, nn.LSTM):
+            nn.init.orthogonal_(module.weight_ih_l0.detach(), gain=1)
+            nn.init.orthogonal_(module.weight_hh_l0.detach(), gain=1)
+            nn.init.orthogonal_(module.weight_ih_l1.detach(), gain=1)
+            nn.init.orthogonal_(module.weight_hh_l1.detach(), gain=1)
+            module.bias_ih_l0.detach().fill_(0.)
+            module.bias_hh_l0.detach().fill_(0.)
+            module.bias_ih_l1.detach().fill_(0.)
+            module.bias_ih_l1.detach().fill_(0.)
+
+
+class AttnDecoder_ver2(nn.Module):
+    def __init__(self, encoded_size, hidden_size, layer_num, input_len, output_size=1, drop_frac=0., extracted_size=False,
+                 initiallize=False):
+        super(AttnDecoder_ver2, self).__init__()
+        self.encoded_size = encoded_size
+        self.hidden_size = hidden_size
+        self.layer_num = layer_num
+        self.input_len = input_len
+        self.extracted_size = extracted_size
+        self.output_size = output_size
+
+        self.fc_hidden = nn.Linear(self.hidden_size, self.hidden_size, bias=False)
+        self.fc_encoder = nn.Linear(self.encoded_size, self.encoded_size, bias=False)
+        self.attention_weights = nn.Linear(self.encoded_size + self.hidden_size, 1)
+        # self.attention_weights = nn.Linear(self.encoded_size, 1)
+        self.lstm = nn.LSTM(input_size=self.encoded_size+1, hidden_size=self.hidden_size, num_layers=self.layer_num,
+                            batch_first=True, dropout=drop_frac)
+        self.linear = nn.Linear(in_features=self.hidden_size, out_features=self.output_size, bias=False)
+
+        if initiallize:
+            self.lstm.apply(self.init_weights)
+            self.linear_act_name = 'tanh'
+            self.fc_hidden.apply(self.init_weights)
+            self.fc_encoder.apply(self.init_weights)
+            self.linear_act_name = 'linear'
+            self.linear.apply(self.init_weights)
+            self.attention_weights.apply(self.init_weights)
+
+    def forward(self, input, hidden, encoder_outputs):
+        temp_hidden = hidden[0][-1:]
+        temp_hidden = torch.transpose(temp_hidden, 0, 1)
+        expanded_hidden = temp_hidden.expand(temp_hidden.shape[0], encoder_outputs.shape[1], temp_hidden.shape[2])
+        alignment_score = torch.tanh(
+                            torch.cat(
+                                (self.fc_hidden(expanded_hidden), self.fc_encoder(encoder_outputs)), dim=-1))
+        # alignment_score = torch.tanh(
+        #                     self.fc_hidden(temp_hidden) + self.fc_encoder(encoder_outputs))
+        alignment_score = self.attention_weights(alignment_score)
+        alignment_score = torch.transpose(alignment_score, 1, 2)
+        # print(alignment_score.squeeze())
+        applied_weights = F.softmax(alignment_score, dim=2)
+        # print(applied_weights.squeeze())
+        context_vector = torch.bmm(applied_weights, encoder_outputs)
+        output = torch.cat((input, context_vector), dim=2)
+        output, hidden = self.lstm(output, hidden)
+        output = self.linear(output)
+        return output, hidden, applied_weights.detach()
+
+    def init_weights(self, module):
+        # linear act 종류에 따라서 초기화 모델 달라지게 코딩하기. ReLU -> kaiming_normal. the others -> xavier
+        if isinstance(module, nn.Linear):
+            if self.linear_act_name == 'relu' or self.linear_act_name == 'leaky_reLU':
+                nn.init.kaiming_normal_(module.weight.detach(), mode='fan_out', nonlinearity=self.linear_act_name)
+                # nn.init.kaiming_uniform_(module.weight.detach(), mode='fan_out', nonlinearity='relu')
+            elif any(self.linear_act_name == np.array(['tanh', 'sigmoid', 'linear'])):
+                nn.init.xavier_normal_(module.weight.detach(), gain=nn.init.calculate_gain(self.linear_act_name))
+                # nn.init.xavier_uniform_(module.weight.detach(), gain=nn.init.calculate_gain(self.linear_act_name))
+            else:
+                raise NotImplementedError("Initializer got error!")
+        elif isinstance(module, nn.LSTM):
+            nn.init.orthogonal_(module.weight_ih_l0.detach(), gain=1)
+            nn.init.orthogonal_(module.weight_hh_l0.detach(), gain=1)
+            nn.init.orthogonal_(module.weight_ih_l1.detach(), gain=1)
+            nn.init.orthogonal_(module.weight_hh_l1.detach(), gain=1)
+            module.bias_ih_l0.detach().fill_(0.)
+            module.bias_hh_l0.detach().fill_(0.)
+            module.bias_ih_l1.detach().fill_(0.)
+            module.bias_ih_l1.detach().fill_(0.)
+
+class AttnDecoder_ver3(nn.Module):
+    def __init__(self, encoded_size, hidden_size, layer_num, input_len, output_size=1, drop_frac=0., extracted_size=False,
+                 initiallize=False):
+        super(AttnDecoder_ver3, self).__init__()
+        self.encoded_size = encoded_size
+        self.hidden_size = hidden_size
+        self.layer_num = layer_num
+        self.input_len = input_len
+        self.extracted_size = extracted_size
+        self.output_size = output_size
+
+        self.fc_hidden = nn.Linear(self.hidden_size, self.encoded_size, bias=False)
+        self.fc_encoder = nn.Linear(self.encoded_size, self.encoded_size, bias=False)
+        # self.attention_weights = nn.Linear(self.encoded_size + self.hidden_size, 1)
+        self.attention_weights = nn.Linear(self.encoded_size, 1)
+        self.lstm = nn.LSTM(input_size=self.encoded_size+1, hidden_size=self.hidden_size, num_layers=self.layer_num,
+                            batch_first=True, dropout=drop_frac)
+        self.linear = nn.Linear(in_features=self.hidden_size, out_features=self.output_size, bias=False)
+
+        if initiallize:
+            self.lstm.apply(self.init_weights)
+            self.linear_act_name = 'tanh'
+            self.fc_hidden.apply(self.init_weights)
+            self.fc_encoder.apply(self.init_weights)
+            self.linear_act_name = 'linear'
+            self.linear.apply(self.init_weights)
+            self.attention_weights.apply(self.init_weights)
+
+    def forward(self, input, hidden, encoder_outputs):
+        temp_hidden = hidden[0][-1:]
+        temp_hidden = torch.transpose(temp_hidden, 0, 1)
+        alignment_score = torch.tanh(
+                            self.fc_hidden(temp_hidden) + self.fc_encoder(encoder_outputs))
+        alignment_score = self.attention_weights(alignment_score)
+        alignment_score = torch.transpose(alignment_score, 1, 2)
+        # print(alignment_score.squeeze())
+        applied_weights = F.softmax(alignment_score, dim=2)
+        # print(applied_weights.squeeze())
+        context_vector = torch.bmm(applied_weights, encoder_outputs)
+        output = torch.cat((input, context_vector), dim=2)
+        output, hidden = self.lstm(output, hidden)
+        output = self.linear(output)
+        return output, hidden, applied_weights.detach()
+
+    def init_weights(self, module):
+        # linear act 종류에 따라서 초기화 모델 달라지게 코딩하기. ReLU -> kaiming_normal. the others -> xavier
+        if isinstance(module, nn.Linear):
+            if self.linear_act_name == 'relu' or self.linear_act_name == 'leaky_reLU':
+                nn.init.kaiming_normal_(module.weight.detach(), mode='fan_out', nonlinearity=self.linear_act_name)
+                # nn.init.kaiming_uniform_(module.weight.detach(), mode='fan_out', nonlinearity='relu')
+            elif any(self.linear_act_name == np.array(['tanh', 'sigmoid', 'linear'])):
+                nn.init.xavier_normal_(module.weight.detach(), gain=nn.init.calculate_gain(self.linear_act_name))
+                # nn.init.xavier_uniform_(module.weight.detach(), gain=nn.init.calculate_gain(self.linear_act_name))
+            else:
+                raise NotImplementedError("Initializer got error!")
+        elif isinstance(module, nn.LSTM):
+            nn.init.orthogonal_(module.weight_ih_l0.detach(), gain=1)
+            nn.init.orthogonal_(module.weight_hh_l0.detach(), gain=1)
+            nn.init.orthogonal_(module.weight_ih_l1.detach(), gain=1)
+            nn.init.orthogonal_(module.weight_hh_l1.detach(), gain=1)
+            module.bias_ih_l0.detach().fill_(0.)
+            module.bias_hh_l0.detach().fill_(0.)
+            module.bias_ih_l1.detach().fill_(0.)
+            module.bias_ih_l1.detach().fill_(0.)
+
+class AttnDecoder_ver4(nn.Module):
+    def __init__(self, encoded_size, hidden_size, layer_num, input_len, output_size=1, drop_frac=0., extracted_size=False,
+                 initiallize=False):
+        super(AttnDecoder_ver4, self).__init__()
+        self.encoded_size = encoded_size
+        self.hidden_size = hidden_size
+        self.layer_num = layer_num
+        self.input_len = input_len
+        self.extracted_size = extracted_size
+        self.output_size = output_size
+
+        self.fc_hidden = nn.Linear(self.hidden_size, self.encoded_size, bias=False)
+        self.fc_encoder = nn.Linear(self.encoded_size, self.encoded_size, bias=False)
+        # self.attention_weights = nn.Linear(self.encoded_size + self.hidden_size, 1)
+        self.attention_weights = nn.Linear(self.encoded_size, 1)
+        self.lstm = nn.LSTM(input_size=self.encoded_size+self.hidden_size, hidden_size=self.hidden_size, num_layers=self.layer_num,
+                            batch_first=True, dropout=drop_frac)
+        self.linear = nn.Linear(in_features=self.hidden_size, out_features=self.output_size, bias=False)
+        self.input_increase = nn.Linear(in_features=1, out_features=self.hidden_size, bias=False)
+
+        if initiallize:
+            self.lstm.apply(self.init_weights)
+            self.linear_act_name = 'tanh'
+            self.fc_hidden.apply(self.init_weights)
+            self.fc_encoder.apply(self.init_weights)
+            self.linear_act_name = 'linear'
+            self.linear.apply(self.init_weights)
+            self.attention_weights.apply(self.init_weights)
+
+    def forward(self, input, hidden, encoder_outputs):
+        temp_hidden = hidden[0][-1:]
+        temp_hidden = torch.transpose(temp_hidden, 0, 1)
+        alignment_score = torch.tanh(
+                            self.fc_hidden(temp_hidden) + self.fc_encoder(encoder_outputs))
+        alignment_score = self.attention_weights(alignment_score)
+        alignment_score = torch.transpose(alignment_score, 1, 2)
+        # print(alignment_score.squeeze())
+        applied_weights = F.softmax(alignment_score, dim=2)
+        # print(applied_weights.squeeze())
+        context_vector = torch.bmm(applied_weights, encoder_outputs)
+        big_input = self.input_increase(input)
+        output = torch.cat((big_input, context_vector), dim=2)
+        output, hidden = self.lstm(output, hidden)
+        output = self.linear(output)
+        return output, hidden, applied_weights.detach()
+
+    def init_weights(self, module):
+        # linear act 종류에 따라서 초기화 모델 달라지게 코딩하기. ReLU -> kaiming_normal. the others -> xavier
+        if isinstance(module, nn.Linear):
+            if self.linear_act_name == 'relu' or self.linear_act_name == 'leaky_reLU':
+                nn.init.kaiming_normal_(module.weight.detach(), mode='fan_out', nonlinearity=self.linear_act_name)
+                # nn.init.kaiming_uniform_(module.weight.detach(), mode='fan_out', nonlinearity='relu')
+            elif any(self.linear_act_name == np.array(['tanh', 'sigmoid', 'linear'])):
+                nn.init.xavier_normal_(module.weight.detach(), gain=nn.init.calculate_gain(self.linear_act_name))
+                # nn.init.xavier_uniform_(module.weight.detach(), gain=nn.init.calculate_gain(self.linear_act_name))
+            else:
+                raise NotImplementedError("Initializer got error!")
+        elif isinstance(module, nn.LSTM):
+            nn.init.orthogonal_(module.weight_ih_l0.detach(), gain=1)
+            nn.init.orthogonal_(module.weight_hh_l0.detach(), gain=1)
+            nn.init.orthogonal_(module.weight_ih_l1.detach(), gain=1)
+            nn.init.orthogonal_(module.weight_hh_l1.detach(), gain=1)
+            module.bias_ih_l0.detach().fill_(0.)
+            module.bias_hh_l0.detach().fill_(0.)
+            module.bias_ih_l1.detach().fill_(0.)
+            module.bias_ih_l1.detach().fill_(0.)
+
+class AttnDecoder_ver5(nn.Module):
+    def __init__(self, encoded_size, hidden_size, layer_num, input_len, output_size, drop_frac=0., extracted_size=False,
+                 initiallize=False):
+        super(AttnDecoder_ver5, self).__init__()
+        self.encoded_size = encoded_size
+        self.hidden_size = hidden_size
+        self.layer_num = layer_num
+        self.input_len = input_len
+        self.extracted_size = extracted_size
+        self.output_size = output_size
+
+        self.fc_hidden = nn.Linear(self.hidden_size, self.encoded_size, bias=False)
+        self.fc_encoder = nn.Linear(self.encoded_size, self.encoded_size, bias=False)
+        # self.attention_weights = nn.Linear(self.encoded_size + self.hidden_size, 1)
+        self.attention_weights = nn.Linear(self.encoded_size, 1)
+        self.lstm = nn.LSTM(input_size=self.encoded_size+1, hidden_size=self.hidden_size, num_layers=self.layer_num,
+                            batch_first=True, dropout=drop_frac)
+        self.linear = nn.Linear(in_features=self.hidden_size, out_features=self.output_size, bias=False)
+
+        if initiallize:
+            self.lstm.apply(self.init_weights)
+            self.linear_act_name = 'tanh'
+            self.fc_hidden.apply(self.init_weights)
+            self.fc_encoder.apply(self.init_weights)
+            self.linear_act_name = 'linear'
+            self.linear.apply(self.init_weights)
+            self.attention_weights.apply(self.init_weights)
+
+    def forward(self, input, hidden, encoder_outputs):
+        temp_hidden = hidden[0][-1:]
+        temp_hidden = torch.transpose(temp_hidden, 0, 1)
+        alignment_score = torch.tanh(
+                            self.fc_hidden(temp_hidden) + self.fc_encoder(encoder_outputs))
+        alignment_score = self.attention_weights(alignment_score)
+        alignment_score = torch.transpose(alignment_score, 1, 2)
+        # print(alignment_score.squeeze())
+        applied_weights = F.softmax(alignment_score, dim=2)
+        # print(applied_weights.squeeze())
+        context_vector = torch.bmm(applied_weights, encoder_outputs)
+        output = torch.cat((input, context_vector), dim=2)
+        output, hidden = self.lstm(output, hidden)
+        output = self.linear(output)
+        return output, hidden, applied_weights.detach()
+
+    def init_weights(self, module):
+        # linear act 종류에 따라서 초기화 모델 달라지게 코딩하기. ReLU -> kaiming_normal. the others -> xavier
+        if isinstance(module, nn.Linear):
+            if self.linear_act_name == 'relu' or self.linear_act_name == 'leaky_reLU':
+                nn.init.kaiming_normal_(module.weight.detach(), mode='fan_out', nonlinearity=self.linear_act_name)
+                # nn.init.kaiming_uniform_(module.weight.detach(), mode='fan_out', nonlinearity='relu')
+            elif any(self.linear_act_name == np.array(['tanh', 'sigmoid', 'linear'])):
+                nn.init.xavier_normal_(module.weight.detach(), gain=nn.init.calculate_gain(self.linear_act_name))
+                # nn.init.xavier_uniform_(module.weight.detach(), gain=nn.init.calculate_gain(self.linear_act_name))
+            else:
+                raise NotImplementedError("Initializer got error!")
+        elif isinstance(module, nn.LSTM):
+            nn.init.orthogonal_(module.weight_ih_l0.detach(), gain=1)
+            nn.init.orthogonal_(module.weight_hh_l0.detach(), gain=1)
+            nn.init.orthogonal_(module.weight_ih_l1.detach(), gain=1)
+            nn.init.orthogonal_(module.weight_hh_l1.detach(), gain=1)
+            module.bias_ih_l0.detach().fill_(0.)
+            module.bias_hh_l0.detach().fill_(0.)
+            module.bias_ih_l1.detach().fill_(0.)
+            module.bias_ih_l1.detach().fill_(0.)
+
+
+
+class AttnDecoder_ver3_LN(nn.Module):
+    def __init__(self, encoded_size, hidden_size, layer_num, input_len, output_size=1, drop_frac=0., extracted_size=False,
+                 initiallize=False):
+        super(AttnDecoder_ver3_LN, self).__init__()
+        self.encoded_size = encoded_size
+        self.hidden_size = hidden_size
+        self.layer_num = layer_num
+        self.input_len = input_len
+        self.extracted_size = extracted_size
+        self.output_size = output_size
+
+        self.fc_hidden = nn.Linear(self.hidden_size, self.encoded_size, bias=False)
+        self.fc_encoder = nn.Linear(self.encoded_size, self.encoded_size, bias=False)
+        # self.attention_weights = nn.Linear(self.encoded_size + self.hidden_size, 1)
+        self.attention_weights = nn.Linear(self.encoded_size, 1)
+
+        self.lstm = nn.LSTM(input_size=self.encoded_size+1, hidden_size=self.hidden_size, num_layers=self.layer_num,
+                             batch_first=True, dropout=drop_frac)
+
+        self.LN = nn.LayerNorm(self.hidden_size)
+
+        self.linear = nn.Linear(in_features=self.hidden_size, out_features=self.output_size, bias=False)
+
+        if initiallize:
+            self.lstm.apply(self.init_weights)
+            self.linear_act_name = 'tanh'
+            self.fc_hidden.apply(self.init_weights)
+            self.fc_encoder.apply(self.init_weights)
+            self.linear_act_name = 'linear'
+            self.linear.apply(self.init_weights)
+            self.attention_weights.apply(self.init_weights)
+
+    def forward(self, input, hidden, encoder_outputs):
+        temp_hidden = hidden[0][-1:]
+        temp_hidden = torch.transpose(temp_hidden, 0, 1)
+        alignment_score = torch.tanh(
+                            self.fc_hidden(temp_hidden) + self.fc_encoder(encoder_outputs))
+        alignment_score = self.attention_weights(alignment_score)
+        alignment_score = torch.transpose(alignment_score, 1, 2)
+        # print(alignment_score.squeeze())
+        applied_weights = F.softmax(alignment_score, dim=2)
+        # print(applied_weights.squeeze())
+        context_vector = torch.bmm(applied_weights, encoder_outputs)
+        output = torch.cat((input, context_vector), dim=2)
+        output, hidden = self.lstm(output, hidden)
+        output = self.linear(output)
+        return output, hidden, applied_weights.detach()
+
+    def init_weights(self, module):
+        # linear act 종류에 따라서 초기화 모델 달라지게 코딩하기. ReLU -> kaiming_normal. the others -> xavier
+        if isinstance(module, nn.Linear):
+            if self.linear_act_name == 'relu' or self.linear_act_name == 'leaky_reLU':
+                nn.init.kaiming_normal_(module.weight.detach(), mode='fan_out', nonlinearity=self.linear_act_name)
+                # nn.init.kaiming_uniform_(module.weight.detach(), mode='fan_out', nonlinearity='relu')
+            elif any(self.linear_act_name == np.array(['tanh', 'sigmoid', 'linear'])):
+                nn.init.xavier_normal_(module.weight.detach(), gain=nn.init.calculate_gain(self.linear_act_name))
+                # nn.init.xavier_uniform_(module.weight.detach(), gain=nn.init.calculate_gain(self.linear_act_name))
+            else:
+                raise NotImplementedError("Initializer got error!")
+        elif isinstance(module, nn.LSTM):
+            nn.init.orthogonal_(module.weight_ih_l0.detach(), gain=1)
+            nn.init.orthogonal_(module.weight_hh_l0.detach(), gain=1)
+            module.bias_ih_l0.detach().fill_(0.)
+            module.bias_hh_l0.detach().fill_(0.)
+
+class AttnDecoder_AttnEOL(nn.Module):
+    def __init__(self, input_size, hidden_size, layer_num, input_len, output_size=1, drop_frac=0., extracted_size=False,
+                 initiallize=False):
+        super(AttnDecoder_AttnEOL, self).__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.layer_num = layer_num
+        self.input_len = input_len
+        self.extracted_size = extracted_size
+        self.output_size = output_size
+
+        self.attn1 = [nn.Linear(self.hidden_size + 1, self.input_len)]
+        self.attn1 = nn.Sequential(*self.attn1)
+        self.attn_combine1 = [nn.Linear(self.input_size + 1, self.input_size),
+                              nn.ReLU()]
+        self.attn_combine1 = nn.Sequential(*self.attn_combine1)
+
+        self.lstm1 = nn.LSTM(input_size=self.input_size, hidden_size=self.hidden_size, num_layers=1,
+                             batch_first=True, dropout=drop_frac)
+
+        self.attn2 = [nn.Linear(self.hidden_size + 1, self.input_len)]
+        self.attn2 = nn.Sequential(*self.attn2)
+        self.attn_combine2 = [nn.Linear(self.input_size + self.hidden_size, self.input_size),
+                              nn.ReLU()]
+        self.attn_combine2 = nn.Sequential(*self.attn_combine2)
+
+        self.lstm2 = nn.LSTM(input_size=self.input_size, hidden_size=self.hidden_size, num_layers=1,
+                             batch_first=True, dropout=drop_frac)
+        linear = []
+        if extracted_size:
+            linear += [nn.Linear(in_features=self.hidden_size, out_features=self.extracted),
+                       nn.ReLU(),
+                       nn.Linear(in_features=self.extracted, out_features=self.output_size)]
+        else:
+            linear += [nn.Linear(in_features=self.hidden_size, out_features=self.output_size)]
+        self.linear = nn.Sequential(*linear)
+
+        if initiallize:
+            self.lstm1.apply(self.init_weights)
+            self.lstm2.apply(self.init_weights)
+            self.linear_act_name = 'relu'
+            self.linear.apply(self.init_weights)
+            self.attn1.apply(self.init_weights)
+            self.attn_combine1.apply(self.init_weights)
+            self.attn2.apply(self.init_weights)
+            self.attn_combine2.apply(self.init_weights)
+
+    def forward(self, input, hidden, encoder_outputs):
+        temp_hidden1 = hidden[0][0:1]
+        temp_hidden1 = torch.transpose(temp_hidden1, 0, 1)
+
+        attn_weights1 = F.softmax(
+            self.attn1(
+                torch.cat((input, temp_hidden1), dim=-1)
+            ),
+            dim=-1)
+        attn_applied1 = torch.bmm(attn_weights1, encoder_outputs)
+        output = self.attn_combine1(torch.cat((input, attn_applied1), dim=-1))
+        output, (model_hidden1, model_cell1) = self.lstm1(output, (hidden[0][0:1], hidden[1][0:1]))
+
+        temp_hidden2 = hidden[0][1:2]
+        temp_hidden2 = torch.transpose(temp_hidden2, 0, 1)
+
+        attn_weights2 = F.softmax(
+            self.attn2(
+                torch.cat((input, temp_hidden2), dim=-1)
+            ),
+            dim=-1)
+        attn_applied2 = torch.bmm(attn_weights2, encoder_outputs)
+
+        output = self.attn_combine2(torch.cat((output, attn_applied2), dim=-1))
+        output, (model_hidden2, model_cell2) = self.lstm2(output, (hidden[0][1:], hidden[1][1:]))
+        output = self.linear(output)
+
+        return output, (torch.cat((model_hidden1, model_hidden2), dim=0),
+                        torch.cat((model_cell1, model_cell2), dim=0)), [attn_weights1.detach(), attn_weights2.detach()]
+
+    def init_weights(self, module):
+        # linear act 종류에 따라서 초기화 모델 달라지게 코딩하기. ReLU -> kaiming_normal. the others -> xavier
+        if isinstance(module, nn.Linear):
+            if self.linear_act_name == 'relu' or self.linear_act_name == 'leaky_reLU':
+                nn.init.kaiming_normal_(module.weight.detach(), mode='fan_out', nonlinearity=self.linear_act_name)
+                # nn.init.kaiming_uniform_(module.weight.detach(), mode='fan_out', nonlinearity='relu')
+                module.bias.detach().fill_(0.)
+            elif any(self.linear_act_name == np.array(['tanh', 'sigmoid', 'linear'])):
+                nn.init.xavier_normal_(module.weight.detach(), gain=nn.init.calculate_gain(self.linear_act_name))
+                # nn.init.xavier_uniform_(module.weight.detach(), gain=nn.init.calculate_gain(self.linear_act_name))
+                module.bias.detach().fill_(0.)
+            else:
+                raise NotImplementedError("Initializer got error!")
+        elif isinstance(module, nn.LSTM):
+            nn.init.orthogonal_(module.weight_ih_l0.detach(), gain=1)
+            nn.init.orthogonal_(module.weight_hh_l0.detach(), gain=1)
+            module.bias_ih_l0.detach().fill_(0.)
+            module.bias_hh_l0.detach().fill_(0.)
+
+class AttnDecoder_AttnEOL_ver2(nn.Module):
+    def __init__(self, encoded_size, hidden_size, layer_num, input_len, output_size=1, drop_frac=0., extracted_size=False,
+                 initiallize=False):
+        super(AttnDecoder_AttnEOL_ver2, self).__init__()
+        self.encoded_size = encoded_size
+        self.hidden_size = hidden_size
+        self.layer_num = layer_num
+        self.input_len = input_len
+        self.extracted_size = extracted_size
+        self.output_size = output_size
+
+        for i in range(self.layer_num):
+            setattr(self, 'fc_hidden{}'.format(i), nn.Linear(self.hidden_size, self.hidden_size, bias=False))
+            setattr(self, 'fc_encoder{}'.format(i), nn.Linear(self.encoded_size, self.encoded_size, bias=False))
+            setattr(self, 'attention_weights{}'.format(i), nn.Linear(self.encoded_size + self.hidden_size, 1))
+            setattr(self, 'lstm{}'.format(i),
+                    nn.LSTM(input_size=self.encoded_size + 1, hidden_size=self.hidden_size, num_layers=1,
+                            batch_first=True, dropout=drop_frac))
+
+        linear = []
+        if extracted_size:
+            linear += [nn.Linear(in_features=self.hidden_size, out_features=self.extracted),
+                       nn.ReLU(),
+                       nn.Linear(in_features=self.extracted, out_features=self.output_size)]
+        else:
+            linear += [nn.Linear(in_features=self.hidden_size, out_features=self.output_size)]
+        self.linear = nn.Sequential(*linear)
+
+        if initiallize:
+            for i in range(self.layer_num):
+                getattr(self, 'lstm{}'.format(i)).apply(self.init_weights)
+                self.linear_act_name = 'tanh'
+                getattr(self, 'fc_hidden{}'.format(i)).apply(self.init_weights)
+                getattr(self, 'fc_encoder{}'.format(i)).apply(self.init_weights)
+                self.linear_act_name = 'linear'
+                getattr(self, 'attention_weights{}'.format(i)).apply(self.init_weights)
+            self.linear.apply(self.init_weights)
+
+    def forward(self, input, hidden, encoder_outputs):
+        hiddens, cells, weights = [], [], []
+        for i in range(self.layer_num):
+            temp_hidden = hidden[0][i:i+1]
+            temp_hidden = torch.transpose(temp_hidden, 0, 1)
+
+            expanded_hidden = temp_hidden.expand(temp_hidden.shape[0], encoder_outputs.shape[1], temp_hidden.shape[2])
+            alignment_score = torch.tanh(
+                    torch.cat(
+                        (getattr(self, 'fc_hidden{}'.format(i))(expanded_hidden),
+                         getattr(self, 'fc_encoder{}'.format(i))(encoder_outputs)), dim=-1))
+            alignment_score = getattr(self, 'attention_weights{}'.format(i))(alignment_score)
+            alignment_score = torch.transpose(alignment_score, 1, 2)
+            applied_weights = F.softmax(alignment_score, dim=-1)
+            weights.append(applied_weights.detach())
+            context_vector = torch.bmm(applied_weights, encoder_outputs)
+            output = torch.cat((input, context_vector), dim=-1)
+            output, (model_hidden, model_cell) = getattr(self, 'lstm{}'.format(i))(output, (hidden[0][i:i+1, :, :], hidden[1][i:i+1, :, :]))
+            hiddens.append(model_hidden)
+            cells.append(model_cell)
+        output = self.linear(output)
+        return output, (torch.cat((hiddens[0], hiddens[1]), dim=0),
+                        torch.cat((cells[0], cells[1]), dim=0)), weights
+
+    def init_weights(self, module):
+        # linear act 종류에 따라서 초기화 모델 달라지게 코딩하기. ReLU -> kaiming_normal. the others -> xavier
+        if isinstance(module, nn.Linear):
+            if self.linear_act_name == 'relu' or self.linear_act_name == 'leaky_reLU':
+                nn.init.kaiming_normal_(module.weight.detach(), mode='fan_out', nonlinearity=self.linear_act_name)
+                # nn.init.kaiming_uniform_(module.weight.detach(), mode='fan_out', nonlinearity='relu')
+            elif any(self.linear_act_name == np.array(['tanh', 'sigmoid', 'linear'])):
+                nn.init.xavier_normal_(module.weight.detach(), gain=nn.init.calculate_gain(self.linear_act_name))
+                # nn.init.xavier_uniform_(module.weight.detach(), gain=nn.init.calculate_gain(self.linear_act_name))
+            else:
+                raise NotImplementedError("Initializer got error!")
+        elif isinstance(module, nn.LSTM):
+            nn.init.orthogonal_(module.weight_ih_l0.detach(), gain=1)
+            nn.init.orthogonal_(module.weight_hh_l0.detach(), gain=1)
+            # nn.init.xavier_normal_(module.weight_ih_l0.detach(), gain=1)
+            # nn.init.xavier_normal_(module.weight_hh_l0.detach(), gain=1)
+            # nn.init.xavier_normal_(module.weight_ih_l1.detach(), gain=1)
+            # nn.init.xavier_normal_(module.weight_hh_l1.detach(), gain=1)
+            # nn.init.xavier_uniform_(module.weight_ih_l0.detach(), gain=4./3.)
+            # nn.init.xavier_uniform_(module.weight_hh_l0.detach(), gain=4./3.)
+            # nn.init.xavier_uniform_(module.weight_ih_l1.detach(), gain=4./3.)
+            # nn.init.xavier_uniform_(module.weight_hh_l1.detach(), gain=4./3.)
+            module.bias_ih_l0.detach().fill_(0.)
+            module.bias_hh_l0.detach().fill_(0.)
+
+class AttnDecoder_AttnEOL_ver3(nn.Module):
+    def __init__(self, encoded_size, hidden_size, layer_num, input_len, output_size=1, drop_frac=0., extracted_size=False,
+                 initiallize=False):
+        super(AttnDecoder_AttnEOL_ver3, self).__init__()
+        self.encoded_size = encoded_size
+        self.hidden_size = hidden_size
+        self.layer_num = layer_num
+        self.input_len = input_len
+        self.extracted_size = extracted_size
+        self.output_size = output_size
+
+        for i in range(self.layer_num):
+            setattr(self, 'fc_hidden{}'.format(i), nn.Linear(self.hidden_size, self.encoded_size, bias=False))
+            setattr(self, 'fc_encoder{}'.format(i), nn.Linear(self.encoded_size, self.encoded_size, bias=False))
+            setattr(self, 'attention_weights{}'.format(i), nn.Linear(self.encoded_size, 1))
+            setattr(self, 'lstm{}'.format(i),
+                    nn.LSTM(input_size=self.encoded_size + 1, hidden_size=self.hidden_size, num_layers=1,
+                            batch_first=True, dropout=drop_frac))
+
+        linear = []
+        if extracted_size:
+            linear += [nn.Linear(in_features=self.hidden_size, out_features=self.extracted),
+                       nn.ReLU(),
+                       nn.Linear(in_features=self.extracted, out_features=self.output_size)]
+        else:
+            linear += [nn.Linear(in_features=self.hidden_size, out_features=self.output_size)]
+        self.linear = nn.Sequential(*linear)
+
+        if initiallize:
+            for i in range(self.layer_num):
+                getattr(self, 'lstm{}'.format(i)).apply(self.init_weights)
+                self.linear_act_name = 'tanh'
+                getattr(self, 'fc_hidden{}'.format(i)).apply(self.init_weights)
+                getattr(self, 'fc_encoder{}'.format(i)).apply(self.init_weights)
+                self.linear_act_name = 'linear'
+                getattr(self, 'attention_weights{}'.format(i)).apply(self.init_weights)
+            self.linear.apply(self.init_weights)
+
+    def forward(self, input, hidden, encoder_outputs):
+        hiddens, cells, weights = [], [], []
+        for i in range(self.layer_num):
+            temp_hidden = hidden[0][i:i+1]
+            temp_hidden = torch.transpose(temp_hidden, 0, 1)
+            alignment_score = torch.tanh(
+                    getattr(self, 'fc_hidden{}'.format(i))(temp_hidden) + getattr(self, 'fc_encoder{}'.format(i))(encoder_outputs))
+            alignment_score = getattr(self, 'attention_weights{}'.format(i))(alignment_score)
+            alignment_score = torch.transpose(alignment_score, 1, 2)
+            applied_weights = F.softmax(alignment_score, dim=-1)
+            weights.append(applied_weights.detach())
+            context_vector = torch.bmm(applied_weights, encoder_outputs)
+            output = torch.cat((input, context_vector), dim=-1)
+            output, (model_hidden, model_cell) = getattr(self, 'lstm{}'.format(i))(output, (hidden[0][i:i+1, :, :], hidden[1][i:i+1, :, :]))
+            hiddens.append(model_hidden)
+            cells.append(model_cell)
+        output = self.linear(output)
+        return output, (torch.cat((hiddens[0], hiddens[1]), dim=0),
+                        torch.cat((cells[0], cells[1]), dim=0)), weights
+
+    def init_weights(self, module):
+        # linear act 종류에 따라서 초기화 모델 달라지게 코딩하기. ReLU -> kaiming_normal. the others -> xavier
+        if isinstance(module, nn.Linear):
+            if self.linear_act_name == 'relu' or self.linear_act_name == 'leaky_reLU':
+                nn.init.kaiming_normal_(module.weight.detach(), mode='fan_out', nonlinearity=self.linear_act_name)
+                # nn.init.kaiming_uniform_(module.weight.detach(), mode='fan_out', nonlinearity='relu')
+            elif any(self.linear_act_name == np.array(['tanh', 'sigmoid', 'linear'])):
+                nn.init.xavier_normal_(module.weight.detach(), gain=nn.init.calculate_gain(self.linear_act_name))
+                # nn.init.xavier_uniform_(module.weight.detach(), gain=nn.init.calculate_gain(self.linear_act_name))
+            else:
+                raise NotImplementedError("Initializer got error!")
+        elif isinstance(module, nn.LSTM):
+            nn.init.orthogonal_(module.weight_ih_l0.detach(), gain=1)
+            nn.init.orthogonal_(module.weight_hh_l0.detach(), gain=1)
+            # nn.init.xavier_normal_(module.weight_ih_l0.detach(), gain=1)
+            # nn.init.xavier_normal_(module.weight_hh_l0.detach(), gain=1)
+            # nn.init.xavier_normal_(module.weight_ih_l1.detach(), gain=1)
+            # nn.init.xavier_normal_(module.weight_hh_l1.detach(), gain=1)
+            # nn.init.xavier_uniform_(module.weight_ih_l0.detach(), gain=4./3.)
+            # nn.init.xavier_uniform_(module.weight_hh_l0.detach(), gain=4./3.)
+            # nn.init.xavier_uniform_(module.weight_ih_l1.detach(), gain=4./3.)
+            # nn.init.xavier_uniform_(module.weight_hh_l1.detach(), gain=4./3.)
+            module.bias_ih_l0.detach().fill_(0.)
+            module.bias_hh_l0.detach().fill_(0.)
+
+
+
+class Discriminator_lin(nn.Module):
+    def __init__(self, drop_frac=0.5):
+        super(Discriminator_lin, self).__init__()
+        self.layer = [nn.Linear(60, 30),
+                      nn.ReLU(),
+                      nn.Dropout(p=drop_frac),
+                      nn.Linear(30, 12),
+                      nn.ReLU(),
+                      nn.Dropout(p=drop_frac),
+                      nn.Linear(12, 1),
+                      nn.Sigmoid()]
+        self.layer = nn.Sequential(*self.layer)
+
+    def forward(self, input):
+        output = self.layer(input)
+        return output
+
+    def init_weights(self, module):
+        # linear act 종류에 따라서 초기화 모델 달라지게 코딩하기. ReLU -> kaiming_normal. the others -> xavier
+        if isinstance(module, nn.Linear):
+            nn.init.kaiming_normal_(module.weight.detach(), mode='fan_out', nonlinearity=self.linear_act_name)
+            module.bias.detach().fill_(0.)
+
+class Discriminator_lstm(nn.Module):
+    def __init__(self, unit_size, drop_frac=0.5):
+        super(Discriminator_lstm, self).__init__()
+        self.unit_size = unit_size
+        self.drop_rac = drop_frac
+        self.lstm = nn.LSTM(input_size=1, hidden_size=self.unit_size, num_layers=2, batch_first=True)
+        self.layer = [nn.ReLU(),
+                      nn.Dropout(p=self.drop_rac),
+                      nn.Linear(self.unit_size, int(self.unit_size/2)),
+                      nn.ReLU(),
+                      nn.Dropout(p=self.drop_rac),
+                      nn.Linear(int(self.unit_size/2), 1),
+                      nn.Sigmoid()]
+        self.layer = nn.Sequential(*self.layer)
+
+    def forward(self, input):
+        input = input.reshape(input.shape[0], 60, 1)
+        output, _ = self.lstm(input)
+        output = output[:, -1:, :]
+        output = output.view(output.shape[0], -1)
+        output = self.layer(output)
+        return output
+
+    def init_weights(self, module):
+        # linear act 종류에 따라서 초기화 모델 달라지게 코딩하기. ReLU -> kaiming_normal. the others -> xavier
+        if isinstance(module, nn.Linear):
+            nn.init.kaiming_normal_(module.weight.detach(), mode='fan_out', nonlinearity=self.linear_act_name)
+            module.bias.detach().fill_(0.)
+
+        elif isinstance(module, nn.LSTM):
+            nn.init.orthogonal_(module.weight_ih_l0.detach(), gain=1)
+            nn.init.orthogonal_(module.weight_hh_l0.detach(), gain=1)
+            nn.init.orthogonal_(module.weight_ih_l1.detach(), gain=1)
+            nn.init.orthogonal_(module.weight_hh_l1.detach(), gain=1)
+            module.bias_ih_l0.detach().fill_(0.)
+            module.bias_hh_l0.detach().fill_(0.)
+            module.bias_ih_l1.detach().fill_(0.)
+            module.bias_hh_l1.detach().fill_(0.)
+
+class Fully_connected(nn.Module):
+    def __init__(self, input_size, output_size, num_nod, num_layer, drop_frac=0., initialize=True):
+        super(Fully_connected, self).__init__()
+
+        self.input_size = input_size
+        self.output_size = output_size
+        self.num_nod = num_nod
+        self.num_layer = num_layer
+        self.drop_frac = drop_frac
+
+        self.init_layer = nn.Sequential(
+            nn.Linear(self.input_size, self.num_nod),
+            nn.ReLU(),
+            nn.BatchNorm1d(self.num_nod)
+        )
+        if self.num_layer >= 3:
+            for i in range(self.num_layer-2):
+                setattr(self, 'fc_layer{}'.format(i),
+                        nn.Sequential(
+                            nn.Linear(self.num_nod, self.num_nod),
+                                      nn.ReLU(),
+                                      nn.BatchNorm1d(self.num_nod),
+                                      nn.Dropout(p=self.drop_frac))
+                        )
+
+        self.last_layer = nn.Sequential(
+            nn.Linear(self.num_nod, self.output_size)
+        )
+
+        if initialize:
+            self.init_layer.apply(self.init_weights)
+
+    def forward(self, input):
+        self.input = input
+        self.input = torch.squeeze(self.input, dim=-1)
+
+        output = self.init_layer(self.input)
+        skip_info = output
+
+        count = 0
+        if self.num_layer >= 3:
+            for i in range(self.num_layer-2):
+                count += 1
+                output = getattr(self, 'fc_layer{}'.format(i))(output)
+                if count%2 == 0:
+                    output = output+skip_info
+                    skip_info = output
+        output = self.last_layer(output)
+        return output
+
+    def init_weights(self, module):
+        # linear act 종류에 따라서 초기화 모델 달라지게 코딩하기. ReLU -> kaiming_normal. the others -> xavier
+        if isinstance(module, nn.Linear):
+            nn.init.kaiming_normal_(module.weight.detach(), mode='fan_out', nonlinearity='relu')
+
+        elif isinstance(module, nn.BatchNorm1d):
+            module.weight.detach().fill_(1.)  # Batch Normalization 때의 가우시안 분산을 1로
+            module.bias.detach().fill_(0.)
+
+if __name__ == '__main__':
+    import numpy as np
+
+    input = np.arange(24).reshape(3, 8, 1)
+    input = torch.from_numpy(input).to(dtype=torch.float32)
+    target = np.arange(24).reshape(3, 8, 1) * 2
+    target = torch.from_numpy(target).to(dtype=torch.float32)
+
+    input_size = 1
+    encoded_size = 1
+    drop_ratio = 0.0
+    batch_size = 200
+    input_len = 30
+    output_len = 30
+    SHUFFLE = True
+    num_workers = 4
+    EPOCHS = 2000
+    unit_size = 256
+    initialize = True
+
+    E = Encoder4Attn(input_size=input_size, hidden_size=unit_size, layer_num=2, encoded_size=encoded_size,
+                     drop_frac=drop_ratio, initiallize=initialize).to(device=DEVICE)
+    D = AttnDecoder(input_size=encoded_size, hidden_size=unit_size, layer_num=2, input_len=input_len,
+                    drop_frac=drop_ratio, initiallize=initialize).to(device=DEVICE)
