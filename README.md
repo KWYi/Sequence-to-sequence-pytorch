@@ -6,7 +6,7 @@ This code has been used for the paper "Forecast of Major Solar X-Ray Flare Flux 
 
 <img src="https://user-images.githubusercontent.com/48608835/130018992-fd295386-a109-4814-8a92-c54c13b234b9.png" width=880px>
 
-## Usage in the paper
+## Usages in the paper
 In the paper, following two usages were used.
 
 ```
