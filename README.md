@@ -4,7 +4,7 @@ This is a PyTorch implementation of sequence-to-seqence (seq2seq) and seq2seq wi
 
 This code has been used for the paper "Forecast of Major Solar X-Ray Flare Flux Profiles Using Novel Deep Learning Models" (https://doi.org/10.3847/2041-8213/ab701b).
 
-<img src="https://user-images.githubusercontent.com/48608835/130018992-fd295386-a109-4814-8a92-c54c13b234b9.png" width=880px>
+<img src="https://user-images.githubusercontent.com/48608835/130169628-4092701f-c22f-4a72-a812-e6cdd4c37630.png" width=880px>
 
 ## Usages in the paper
 In the paper, following two usages were used.
