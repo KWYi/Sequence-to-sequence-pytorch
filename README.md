@@ -35,13 +35,13 @@ for epoch in EPOCHS:
   for Train_input, Train_target in Train_data_loader:  
     Encoder_result, Encoder_hidden = E(Train_input)
     Decoder_hidden = Encoder_hidden
-    # Result = torch.zeros(len(Encoder_result), output_len).to(device=DEVICE)
+    Result = torch.zeros(len(Encoder_result), output_len).to(device=DEVICE)
     Result_part = Train_input[:, -1:, :]
     
     for di in range(output_len):  # Save model results in array batch_size*output_len
       # # Output of prior timestep of lstm is used for net input and Encoder result is concated with it in the model
       Result_part, Decoder_hidden, _ = D(Result_part, Decoder_hidden, Encoder_result)
-      # Result[:, di] = Result_part.view(len(Encoder_result))
+      Result[:, di] = Result_part.view(len(Encoder_result))
 ```
 
 
@@ -71,11 +71,11 @@ for epoch in EPOCHS:
     Encoder_result, Encoder_hidden = E(Train_input)
     Encoder_result = Encoder_result[:, -1:, :]
     Decoder_hidden = Encoder_hidden
-    # Result = torch.zeros(len(Encoder_result), output_len).to(device=DEVICE)
+    Result = torch.zeros(len(Encoder_result), output_len).to(device=DEVICE)
     Result_part = Train_input[:, -1:, :]
     
     for di in range(output_len):  # Save model results in array batch_size*output_len
       # # Output of prior timestep of lstm is used for net input and Encoder result is concated with it in the model
       Result_part, Decoder_hidden, _ = D(Result_part, Decoder_hidden, Encoder_result)
-      # Result[:, di] = Result_part.view(len(Encoder_result))
+      Result[:, di] = Result_part.view(len(Encoder_result))
 ```
