@@ -12,7 +12,7 @@ In the paper, following two usages were used.
 ```
 import os, sys
 import torch
-from seq2seq_models import Encoder4Attn, AttnDecoder_ver3
+from Models import Encoder4Attn, AttnDecoder_ver3
     
 Model_types = ['E_attn_D_ver3']
 input_size = 1
@@ -48,7 +48,7 @@ for epoch in EPOCHS:
 ```
 import os, sys
 import torch
-from seq2seq_models import Encoder, Decoder
+from Models import Encoder, Decoder
 
 Model_types = ['E_D']
 input_size = 1
